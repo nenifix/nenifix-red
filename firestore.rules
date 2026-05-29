@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Path Variable Hardening & Type Size Helpers
+    function isValidId(id) {
+       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Validation Blueprint for the Meeting entity
+    function isValidMeeting(data) {
+      return data.keys().hasAll(['id', 'name', 'email', 'date', 'time', 'profile', 'ticketSize', 'status', 'createdAt'])
+        && data.keys().size() == 9
+        && data.id is string
+        && data.id.size() >= 5
+        && data.id.size() <= 64
+        && data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 100
+        && data.email is string
+        && data.email.size() >= 3
+        && data.email.size() <= 100
+        && data.date is string
+        && data.date.size() >= 5
+        && data.date.size() <= 32
+        && data.time is string
+        && data.time.size() >= 3
+        && data.time.size() <= 32
+        && data.profile is string
+        && data.profile.size() <= 100
+        && data.ticketSize is string
+        && data.ticketSize.size() <= 100
+        && data.status is string
+        && (data.status == 'Confirmed' || data.status == 'Pending' || data.status == 'Completed')
+        && (data.createdAt is string || data.createdAt is timestamp);
+    }
+
+    // Match Rules for Meetings Collection
+    match /meetings/{meetingId} {
+      // Require path variable integrity for single operations
+      allow get: if isValidId(meetingId);
+      
+      // Prevent bulk query scraping: only authenticated users are permitted to list
+      allow list: if isSignedIn();
+      
+      // Permit Anyone to request/create new Briefing roundtables, as long as it matches strict shapes
+      allow create: if isValidId(meetingId)
+        && isValidMeeting(request.resource.data)
+        && request.resource.data.id == meetingId;
+        
+      // Ensure immutability on core fields upon updates
+      allow update: if isValidId(meetingId)
+        && isValidMeeting(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (
+          // Action 1: Status modulation (e.g. approve or mark Completed)
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+        );
+        
+      // Delete access is restricted solely to signed-in operators
+      allow delete: if isSignedIn() && isValidId(meetingId);
+    }
+  }
+}

@@ -1,6 +1,30 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Message, Meeting } from "../types";
-import { Terminal, Send, Calendar, CheckSquare, Briefcase, DollarSign, Clock, HelpCircle, Loader2, Sparkles, User, Users } from "lucide-react";
+import { 
+  Terminal, 
+  Send, 
+  Calendar, 
+  CheckSquare, 
+  Briefcase, 
+  DollarSign, 
+  Clock, 
+  HelpCircle, 
+  Loader2, 
+  Sparkles, 
+  User, 
+  Users,
+  LogOut,
+  RefreshCw,
+  FileText,
+  CheckCircle,
+  Settings,
+  Link as LinkIcon
+} from "lucide-react";
+import { initAuth, googleSignIn, handleLogout, db, handleFirestoreError, OperationType, auth } from "../lib/firebase";
+import { createNeniFixForm, fetchAndParseFormResponses, GoogleFormConfig } from "../lib/googleFormsService";
+import { User as FirebaseUser } from "firebase/auth";
+import ClientFilePicker from "./ClientFilePicker";
+import { doc, setDoc, getDocs, collection, query, orderBy } from "firebase/firestore";
 
 export default function InvestorsConsole() {
   // Chat Interface State
@@ -26,12 +50,103 @@ export default function InvestorsConsole() {
   const [recentBookings, setRecentBookings] = useState<Meeting[]>([]);
   const [formError, setFormError] = useState("");
 
-  // Fetch recent bookings
-  const fetchBookings = async () => {
+  // Firebase Auth & Google Forms Integration State
+  const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [connectedForm, setConnectedForm] = useState<GoogleFormConfig | null>(null);
+  const [isCreatingForm, setIsCreatingForm] = useState(false);
+  const [isSyncingResponses, setIsSyncingResponses] = useState(false);
+  const [formMode, setFormMode] = useState<"standard" | "embed">("standard");
+  const [formIdInput, setFormIdInput] = useState("");
+  const [showConfig, setShowConfig] = useState(false);
+
+  // Initialize Auth & Saved configuration on mount
+  useEffect(() => {
+    // Check if there is an existing form saved in localStorage
+    const savedForm = localStorage.getItem("nenifix_connected_form");
+    if (savedForm) {
+      try {
+        setConnectedForm(JSON.parse(savedForm));
+      } catch (e) {
+        console.error("Error parsing saved form", e);
+      }
+    }
+
+    const savedMode = localStorage.getItem("nenifix_form_mode");
+    if (savedMode === "embed" || savedMode === "standard") {
+      setFormMode(savedMode);
+    }
+
+    // Initialize Firebase Auth listener
+    const unsubscribe = initAuth(
+      (currentUser, token) => {
+        setUser(currentUser);
+        setGoogleToken(token);
+      },
+      () => {
+        setUser(null);
+        setGoogleToken(null);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Fetch local mock bookings and sync live Google Form responses if connected
+  const fetchBookings = async (customToken?: string | null) => {
     try {
       const res = await fetch("/api/meetings/list");
-      const data = await res.json();
-      setRecentBookings(data);
+      let bookingsData: Meeting[] = [];
+      try {
+        bookingsData = await res.json();
+      } catch (err) {
+        console.error("Failed parsing API list:", err);
+      }
+      
+      // If signed-in, sync with genuine cloud Firestore collection
+      const isUserSignedIn = !!auth.currentUser;
+      if (isUserSignedIn) {
+        try {
+          const q = query(collection(db, "meetings"), orderBy("createdAt", "desc"));
+          const snapshot = await getDocs(q);
+          const firestoreDocs = snapshot.docs.map(d => d.data() as Meeting);
+          
+          // Deduplicate incoming list by unique confirmation ID
+          const seenIds = new Set(bookingsData.map(b => b.id));
+          for (const item of firestoreDocs) {
+            if (!seenIds.has(item.id)) {
+              bookingsData.push(item);
+              seenIds.add(item.id);
+            }
+          }
+        } catch (fsErr) {
+          console.warn("Firestore list fetch failed/restricted under security policy. Checking details...");
+          try {
+            handleFirestoreError(fsErr, OperationType.LIST, "meetings");
+          } catch (formattedErr) {
+            console.error("Structured permissions exception:", formattedErr);
+          }
+        }
+      }
+
+      const tokenToUse = customToken !== undefined ? customToken : googleToken;
+      
+      if (connectedForm && tokenToUse) {
+        setIsSyncingResponses(true);
+        try {
+          const formResponses = await fetchAndParseFormResponses(connectedForm.formId, tokenToUse);
+          // Combine both responses
+          setRecentBookings([...formResponses, ...bookingsData]);
+        } catch (err) {
+          console.error("Error fetching Google Form responses, fallback to local:", err);
+          setRecentBookings(bookingsData);
+        } finally {
+          setIsSyncingResponses(false);
+        }
+      } else {
+        setRecentBookings(bookingsData);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -39,7 +154,91 @@ export default function InvestorsConsole() {
 
   useEffect(() => {
     fetchBookings();
-  }, [bookingResponse]);
+  }, [bookingResponse, connectedForm, googleToken]);
+
+  // Firebase Google Log-In
+  const handleGoogleLogin = async () => {
+    setIsAuthLoading(true);
+    setFormError("");
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setUser(result.user);
+        setGoogleToken(result.accessToken);
+        // Sync bookings immediately using the newly retrieved token
+        await fetchBookings(result.accessToken);
+      }
+    } catch (err: any) {
+      console.error("Firebase Login failed:", err);
+      setFormError(`Google Sign-In failed: ${err.message || err.toString()}`);
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  // Firebase Log-Out
+  const handleGoogleLogout = async () => {
+    try {
+      await handleLogout();
+      setUser(null);
+      setGoogleToken(null);
+    } catch (err) {
+      console.error("Firebase Logout failed:", err);
+    }
+  };
+
+  // Google Forms API: Programmatic Creation of standard briefing questionnaire form
+  const handleCreateGoogleForm = async () => {
+    if (!googleToken) {
+      setFormError("Authentication is required to provision Google Forms.");
+      return;
+    }
+    setIsCreatingForm(true);
+    setFormError("");
+    try {
+      const configuredForm = await createNeniFixForm(googleToken);
+      setConnectedForm(configuredForm);
+      localStorage.setItem("nenifix_connected_form", JSON.stringify(configuredForm));
+      setFormMode("embed");
+      localStorage.setItem("nenifix_form_mode", "embed");
+      await fetchBookings(googleToken);
+    } catch (err: any) {
+      console.error("Form creation error:", err);
+      setFormError(`Form Provision error: ${err.message || err.toString()}`);
+    } finally {
+      setIsCreatingForm(false);
+    }
+  };
+
+  // Link pre-existing Google Form ID
+  const handleLinkExistingForm = () => {
+    if (!formIdInput.trim()) {
+      setFormError("Please enter a valid Google Form ID.");
+      return;
+    }
+    const formId = formIdInput.trim();
+    const mockForm: GoogleFormConfig = {
+      formId,
+      responderUri: `https://docs.google.com/forms/d/e/${formId}/viewform`,
+      title: "Linked Google Form"
+    };
+    setConnectedForm(mockForm);
+    localStorage.setItem("nenifix_connected_form", JSON.stringify(mockForm));
+    setFormIdInput("");
+    setFormError("");
+  };
+
+  // Unlink / Clear Google Forms config from workspace
+  const handleClearConnectedForm = () => {
+    setConnectedForm(null);
+    localStorage.removeItem("nenifix_connected_form");
+  };
+
+  // Change embedding style vs local styled form input
+  const handleToggleFormMode = (mode: "standard" | "embed") => {
+    setFormMode(mode);
+    localStorage.setItem("nenifix_form_mode", mode);
+  };
 
   // Click suggestion handler
   const handleSuggestionClick = (promptStr: string) => {
@@ -115,6 +314,30 @@ export default function InvestorsConsole() {
       });
       const data = await res.json();
       if (data.success && data.meeting) {
+        const meetingId = data.meeting.id;
+        
+        // 100% compliant payload matching the validated firestore schema rules exactly
+        const meetingPayload = {
+          id: meetingId,
+          name: data.meeting.name,
+          email: data.meeting.email,
+          date: data.meeting.date,
+          time: data.meeting.time,
+          profile: data.meeting.profile || "Venture",
+          ticketSize: data.meeting.ticketSize || "$250k - $500k",
+          status: data.meeting.status || "Confirmed",
+          createdAt: new Date().toISOString()
+        };
+
+        // Write directly to Firebase Cloud Firestore for persistent storage
+        try {
+          await setDoc(doc(db, "meetings", meetingId), meetingPayload);
+        } catch (fsErr) {
+          console.warn("Firestore writing failed. Interfacing secure diagnostics exception check...");
+          // Handle fail states using our standardized security exception handlers
+          handleFirestoreError(fsErr, OperationType.CREATE, `meetings/${meetingId}`);
+        }
+
         setBookingResponse(data.meeting);
         setBookName("");
         setBookEmail("");
@@ -123,9 +346,9 @@ export default function InvestorsConsole() {
       } else {
         setFormError("Failed to register slot. Try again.");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setFormError("Could not connect to the scheduling service.");
+      setFormError(`Could not connect to the scheduling service: ${err.message || err.toString()}`);
     } finally {
       setIsBookingLoading(false);
     }
@@ -249,104 +472,313 @@ export default function InvestorsConsole() {
           
           {/* Booking Form Card layout */}
           <div className="bg-[#141416] border border-white/5 p-8 rounded-[2rem] shadow-2xl relative">
-            <h3 className="font-display text-xl text-white mb-6 font-bold flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-primary" />
-              <span>Schedule Investor Briefing</span>
-            </h3>
-
-            <form onSubmit={handleBookingSubmit} className="space-y-4">
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Investee Name</label>
-                  <input
-                    type="text"
-                    value={bookName}
-                    onChange={(e) => setBookName(e.target.value)}
-                    required
-                    placeholder="E.g. Alexis Carter"
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-white"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Inquiry Email</label>
-                  <input
-                    type="email"
-                    value={bookEmail}
-                    onChange={(e) => setBookEmail(e.target.value)}
-                    required
-                    placeholder="alexis@strategic-cap.com"
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-white"
-                  />
-                </div>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Investor Profile</label>
-                  <select
-                    value={profile}
-                    onChange={(e) => setProfile(e.target.value)}
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body"
-                  >
-                    <option value="Venture">Strategic Venture Capital</option>
-                    <option value="Growth">Growth Equity Fund</option>
-                    <option value="Strategic">Strategic Corporate Partner</option>
-                    <option value="Angel">Individual Accredited Angel</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Desired Ticket Allocation</label>
-                  <select
-                    value={ticketSize}
-                    onChange={(e) => setTicketSize(e.target.value)}
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body"
-                  >
-                    <option value="$100k - $250k">$100k - $250k</option>
-                    <option value="$250k - $500k">$250k - $500k</option>
-                    <option value="$500k - $1M">$500k - $1M</option>
-                    <option value="$1M - $5M+">$1M - $5M+</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Briefing Date</label>
-                  <input
-                    type="date"
-                    value={bookDate}
-                    onChange={(e) => setBookDate(e.target.value)}
-                    required
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Briefing Time (UTC)</label>
-                  <input
-                    type="time"
-                    value={bookTime}
-                    onChange={(e) => setBookTime(e.target.value)}
-                    required
-                    className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body"
-                  />
-                </div>
-              </div>
-
-              {formError && (
-                <p className="text-[#ff6b6b] text-xs font-mono font-bold mt-1 uppercase tracking-wider animate-fadeIn">
-                  Error: {formError}
-                </p>
-              )}
-
+            
+            {/* Header with Settings Toggle */}
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="font-display text-xl text-white font-bold flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-primary" />
+                <span>Schedule Investor Briefing</span>
+              </h3>
+              
               <button
-                type="submit"
-                disabled={isBookingLoading}
-                className="w-full bg-primary hover:bg-opacity-90 active:scale-95 text-white font-mono text-xs font-bold tracking-widest py-4 rounded-full uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-[0_4px_14px_rgba(99,102,241,0.4)]"
-                id="submit-booking-btn"
+                type="button"
+                onClick={() => setShowConfig(!showConfig)}
+                className={`p-2 rounded-xl border transition-all duration-300 flex items-center justify-center cursor-pointer ${
+                  showConfig 
+                    ? "bg-primary/20 text-primary border-primary/30" 
+                    : "bg-white/5 text-white/50 border-white/5 hover:text-white hover:border-white/10"
+                }`}
+                title="Configure Google Forms Sync Settings"
               >
-                {isBookingLoading ? "Booking Grid Slots..." : "Initiate Roundtable Booking"}
+                <Settings className="w-4 h-4" />
               </button>
-            </form>
+            </div>
+
+            {/* Google Forms Connection Panel */}
+            {showConfig && (
+              <div className="mb-6 p-5 bg-[#0A0A0B] border border-white/5 rounded-2xl animate-fadeIn space-y-4 text-xs">
+                <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                  <span className="font-mono text-[10px] uppercase text-primary tracking-wider font-bold">Google Forms Setting</span>
+                  {user ? (
+                    <button
+                      type="button"
+                      onClick={handleGoogleLogout}
+                      className="text-[10px] text-zinc-400 hover:text-red-400 font-mono transition duration-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      <LogOut className="w-3 h-3" />
+                      <span>Disconnect Workspace</span>
+                    </button>
+                  ) : (
+                    <span className="font-mono text-[9px] bg-red-500/10 border border-red-500/20 text-red-400 px-2.5 py-0.5 rounded-full select-none">
+                      UNAUTHENTICATED
+                    </span>
+                  )}
+                </div>
+
+                {/* Authentication block */}
+                {!user ? (
+                  <div className="space-y-2 py-1">
+                    <p className="text-white/60 font-sans leading-relaxed">
+                      Connect your Google Workspace to automatically pull native briefings or orchestrate a live Google Form connection.
+                    </p>
+                    
+                    {/* Official Sign in Style Button */}
+                    <button 
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      disabled={isAuthLoading}
+                      className="w-full flex items-center justify-center gap-3 bg-white hover:bg-[#f4f4f4] text-black font-semibold font-sans px-4 py-3 rounded-xl transition duration-300 cursor-pointer disabled:opacity-50"
+                    >
+                      {isAuthLoading ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-black" />
+                      ) : (
+                        <svg className="w-4 h-4" viewBox="0 0 48 48">
+                          <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                          <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                          <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                          <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                        </svg>
+                      )}
+                      <span className="text-xs font-bold text-slate-800">Sign in with Google</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3 bg-[#141416] p-3 rounded-xl border border-white/5">
+                      <div className="w-8 h-8 rounded-full bg-primary/10 border border-primary/20 text-primary flex items-center justify-center font-mono font-bold font-sans">
+                        {user.displayName?.substring(0,2).toUpperCase() || "G"}
+                      </div>
+                      <div className="overflow-hidden">
+                        <p className="font-mono text-white text-[10px] leading-tight truncate">{user.displayName || "Google Operator"}</p>
+                        <p className="font-mono text-white/40 text-[9px] truncate">{user.email}</p>
+                      </div>
+                    </div>
+
+                    {/* Applet Form Provision state */}
+                    {!connectedForm ? (
+                      <div className="space-y-3 pt-1">
+                        <p className="text-white/60 leading-relaxed font-sans">
+                          No active Google Form is linked yet. Create a standard contact form directly in your Google Drive or specify a custom form ID.
+                        </p>
+                        
+                        <button
+                          type="button"
+                          onClick={handleCreateGoogleForm}
+                          disabled={isCreatingForm}
+                          className="w-full bg-primary/20 hover:bg-primary/30 border border-primary/30 text-white font-mono uppercase tracking-wider py-2.5 rounded-xl transition duration-300 font-bold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                        >
+                          {isCreatingForm ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Creating Form Items...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="w-3.5 h-3.5 text-primary animate-pulse" />
+                              <span>⚡ Auto-Provision Google Form</span>
+                            </>
+                          )}
+                        </button>
+                        
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={formIdInput}
+                            onChange={(e) => setFormIdInput(e.target.value)}
+                            placeholder="Or enter Google Form ID..."
+                            className="flex-1 bg-[#141416] border border-white/10 text-white font-mono text-[10px] px-3 py-2.5 rounded-xl focus:outline-none focus:border-primary placeholder-white/20"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleLinkExistingForm}
+                            className="bg-white/5 border border-white/10 text-white px-3 rounded-xl hover:bg-white/10 transition text-[10px] cursor-pointer"
+                          >
+                            Link
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-3 bg-[#141416] p-4 rounded-xl border border-white/5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-emerald-400 font-bold flex items-center gap-1.5 text-[10px] uppercase">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Linked to Google Drive</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleClearConnectedForm}
+                            className="text-white/30 hover:text-red-400 font-mono text-[9px] uppercase underline cursor-pointer"
+                          >
+                            Unlink
+                          </button>
+                        </div>
+                        
+                        <div>
+                          <p className="text-white font-bold truncate leading-tight">{connectedForm.title}</p>
+                          <p className="text-white/40 font-mono text-[9px] truncate shrink mt-0.5" title={connectedForm.formId}>
+                            ID: {connectedForm.formId}
+                          </p>
+                        </div>
+
+                        {/* Mode selectors */}
+                        <div className="grid grid-cols-2 gap-2 mt-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleFormMode("standard")}
+                            className={`py-1.5 px-2 rounded-lg font-mono text-[10px] border transition cursor-pointer ${
+                              formMode === "standard"
+                                ? "bg-primary text-white border-primary"
+                                : "bg-[#0A0A0B] text-white/50 border-white/10 hover:text-white"
+                            }`}
+                          >
+                            Native UI Form
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleFormMode("embed")}
+                            className={`py-1.5 px-2 rounded-lg font-mono text-[10px] border transition cursor-pointer ${
+                              formMode === "embed"
+                                ? "bg-primary text-white border-primary"
+                                : "bg-[#0A0A0B] text-white/50 border-white/10 hover:text-white"
+                            }`}
+                          >
+                            Embed iframe
+                          </button>
+                        </div>
+
+                        <a
+                          href={connectedForm.responderUri}
+                          target="_blank"
+                          rel="noreferrer referrer"
+                          className="w-full flex items-center justify-center gap-1 bg-[#0A0A0B] hover:bg-[#040404] text-zinc-300 font-mono hover:text-white text-[10px] py-2 rounded-lg border border-white/10 transition mt-2.5 text-center"
+                        >
+                          <LinkIcon className="w-3 h-3" />
+                          <span>View Live Google Form 🔗</span>
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Main Interactive Form Body */}
+            {connectedForm && formMode === "embed" ? (
+              <div className="space-y-4 animate-fadeIn">
+                <div className="relative w-full h-[380px] rounded-2xl overflow-hidden border border-white/10 bg-[#0A0A0B] shadow-inner">
+                  <iframe
+                    src={`${connectedForm.responderUri}?embedded=true`}
+                    className="w-full h-full bg-[#0A0A0B]"
+                    title="NeniFix Responders Form"
+                    referrerPolicy="no-referrer"
+                  >
+                    Loading form...
+                  </iframe>
+                </div>
+                <div className="p-3 bg-primary/10 border border-primary/20 rounded-xl text-center">
+                  <p className="font-mono text-[9px] text-[#e2e2e2]/80 uppercase tracking-widest leading-none font-bold">
+                    Google Form Embedded Mode Active
+                  </p>
+                  <p className="font-sans text-[10px] text-[#BDBDBD] mt-1 leading-relaxed">
+                    Submissions through this form feed directly into Google Forms. Click the "Sync" indicator in the standby register below to synchronize answers in real time.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleBookingSubmit} className="space-y-4">
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Investee Name</label>
+                    <input
+                      type="text"
+                      value={bookName}
+                      onChange={(e) => setBookName(e.target.value)}
+                      required
+                      placeholder="E.g. Alexis Carter"
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Inquiry Email</label>
+                    <input
+                      type="email"
+                      value={bookEmail}
+                      onChange={(e) => setBookEmail(e.target.value)}
+                      required
+                      placeholder="alexis@strategic-cap.com"
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-white"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Investor Profile</label>
+                    <select
+                      value={profile}
+                      onChange={(e) => setProfile(e.target.value)}
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body text-white"
+                    >
+                      <option value="Venture">Strategic Venture Capital</option>
+                      <option value="Growth">Growth Equity Fund</option>
+                      <option value="Strategic">Strategic Corporate Partner</option>
+                      <option value="Angel">Individual Accredited Angel</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Desired Ticket Allocation</label>
+                    <select
+                      value={ticketSize}
+                      onChange={(e) => setTicketSize(e.target.value)}
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body text-white"
+                    >
+                      <option value="$100k - $250k">$100k - $250k</option>
+                      <option value="$250k - $500k">$250k - $500k</option>
+                      <option value="$500k - $1M">$500k - $1M</option>
+                      <option value="$1M - $5M+">$1M - $5M+</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Briefing Date</label>
+                    <input
+                      type="date"
+                      value={bookDate}
+                      onChange={(e) => setBookDate(e.target.value)}
+                      required
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Briefing Time (UTC)</label>
+                    <input
+                      type="time"
+                      value={bookTime}
+                      onChange={(e) => setBookTime(e.target.value)}
+                      required
+                      className="w-full bg-[#0A0A0B] border border-white/10 focus:border-primary focus:outline-none p-3 rounded-xl font-mono text-xs text-text-body text-white"
+                    />
+                  </div>
+                </div>
+
+                {formError && (
+                  <p className="text-[#ff6b6b] text-xs font-mono font-bold mt-1 uppercase tracking-wider animate-fadeIn">
+                    Error: {formError}
+                  </p>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isBookingLoading}
+                  className="w-full bg-primary hover:bg-opacity-90 active:scale-95 text-white font-mono text-xs font-bold tracking-widest py-4 rounded-full uppercase transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-[0_4px_14px_rgba(99,102,241,0.4)]"
+                  id="submit-booking-btn"
+                >
+                  {isBookingLoading ? "Booking Grid Slots..." : "Initiate Roundtable Booking"}
+                </button>
+              </form>
+            )}
 
             {/* Booking confirmation success box */}
             {bookingResponse && (
@@ -357,6 +789,7 @@ export default function InvestorsConsole() {
                 <p className="font-mono text-[9px] text-[#e2e2e2]/60 mb-2">Confirmation ID: {bookingResponse.id}</p>
                 <p className="font-sans text-[#BDBDBD] leading-relaxed">Excellent. We have registered {bookingResponse.name} for NeniFix Roundtable briefs on <strong>{bookingResponse.date}</strong> at <strong>{bookingResponse.time} UTC</strong>. Check your {bookingResponse.email} inbox for virtual credentials.</p>
                 <button 
+                  type="button"
                   onClick={() => setBookingResponse(null)}
                   className="mt-3 cursor-pointer text-[9px] hover:text-emerald-300 uppercase tracking-wider text-emerald-400 font-mono underline block"
                 >
@@ -364,14 +797,37 @@ export default function InvestorsConsole() {
                 </button>
               </div>
             )}
+
+            {/* Google Picker Document Transmission System */}
+            <ClientFilePicker 
+              accessToken={googleToken}
+              user={user}
+              onLogin={handleGoogleLogin}
+            />
           </div>
 
           {/* Active Roundtables Viewport */}
           <div className="bg-[#141416] border border-white/5 p-8 rounded-[2rem] text-left shadow-xl">
-            <h4 className="font-mono text-[10px] text-white/40 uppercase tracking-wider mb-4 flex items-center gap-2">
-              <Users className="w-3.5 h-3.5 text-primary" />
-              <span>Current Briefing Standby Register</span>
-            </h4>
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="font-mono text-[10px] text-white/40 uppercase tracking-wider flex items-center gap-2">
+                <Users className="w-3.5 h-3.5 text-primary" />
+                <span>Current Briefing Standby Register</span>
+              </h4>
+              
+              {connectedForm && googleToken && (
+                <button
+                  type="button"
+                  onClick={() => fetchBookings()}
+                  disabled={isSyncingResponses}
+                  className="flex items-center gap-1 font-mono text-[9px] text-primary hover:text-secondary hover:underline transition duration-300 disabled:opacity-50 uppercase cursor-pointer"
+                  title="Synchronize Google Form answers manually"
+                >
+                  <RefreshCw className={`w-3 h-3 ${isSyncingResponses ? "animate-spin" : ""}`} />
+                  <span>{isSyncingResponses ? "Syncing..." : "Sync Responses"}</span>
+                </button>
+              )}
+            </div>
+
             <div className="space-y-2.5 max-h-[180px] overflow-y-auto pr-1">
               {recentBookings.length === 0 ? (
                 <>

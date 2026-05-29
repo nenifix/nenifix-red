@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "Meeting": {
+      "title": "Meeting",
+      "description": "An scheduled investor roundtable briefing registration",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique confirmation identifier format (NF-CONF-XXXXXX)"
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the investee / registrant"
+        },
+        "email": {
+          "type": "string",
+          "description": "Inquiry contact email address"
+        },
+        "date": {
+          "type": "string",
+          "description": "Inquiry booking date"
+        },
+        "time": {
+          "type": "string",
+          "description": "Briefing booking time in UTC string format"
+        },
+        "profile": {
+          "type": "string",
+          "description": "Investor Profile description role option"
+        },
+        "ticketSize": {
+          "type": "string",
+          "description": "Desired ticket allocation range"
+        },
+        "status": {
+          "type": "string",
+          "description": "Strategic booking approval status"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Database system creation record timestamp"
+        }
+      },
+      "required": ["id", "name", "email", "date", "time", "profile", "ticketSize", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "meetings/{meetingId}": {
+      "schema": "Meeting",
+      "description": "A collection storing individual investor briefing sessions"
+    }
+  }
+}
