@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { initAuth, googleSignIn, handleLogout, db, handleFirestoreError, OperationType, auth } from "../lib/firebase";
 import { createNeniFixForm, fetchAndParseFormResponses, GoogleFormConfig } from "../lib/googleFormsService";
+import { upsertCalendarEvent } from "../lib/googleCalendarService";
 import { User as FirebaseUser } from "firebase/auth";
 import ClientFilePicker from "./ClientFilePicker";
 import { doc, setDoc, getDocs, collection, query, orderBy } from "firebase/firestore";
@@ -61,6 +62,11 @@ export default function InvestorsConsole() {
   const [formIdInput, setFormIdInput] = useState("");
   const [showConfig, setShowConfig] = useState(false);
 
+  // Google Calendar Integration State
+  const [syncedEventIds, setSyncedEventIds] = useState<string[]>([]);
+  const [calendarSyncLoadingId, setCalendarSyncLoadingId] = useState<string | null>(null);
+  const [calendarToast, setCalendarToast] = useState("");
+
   // Initialize Auth & Saved configuration on mount
   useEffect(() => {
     // Check if there is an existing form saved in localStorage
@@ -76,6 +82,15 @@ export default function InvestorsConsole() {
     const savedMode = localStorage.getItem("nenifix_form_mode");
     if (savedMode === "embed" || savedMode === "standard") {
       setFormMode(savedMode);
+    }
+
+    const savedSyncedIds = localStorage.getItem("nenifix_synced_calendar_ids");
+    if (savedSyncedIds) {
+      try {
+        setSyncedEventIds(JSON.parse(savedSyncedIds));
+      } catch (e) {
+        console.error("Error parsing synced calendar ids", e);
+      }
     }
 
     // Initialize Firebase Auth listener
@@ -338,6 +353,22 @@ export default function InvestorsConsole() {
           handleFirestoreError(fsErr, OperationType.CREATE, `meetings/${meetingId}`);
         }
 
+        // Try linking to Google Calendar if googleToken is available
+        if (googleToken) {
+          try {
+            const calRes = await upsertCalendarEvent(googleToken, meetingPayload);
+            if (calRes.success) {
+              const updated = [...syncedEventIds, meetingId];
+              setSyncedEventIds(updated);
+              localStorage.setItem("nenifix_synced_calendar_ids", JSON.stringify(updated));
+              setCalendarToast(`Scheduled: Roundtable Briefing for ${bookName} synced to Google Calendar with notifications!`);
+              setTimeout(() => setCalendarToast(""), 5000);
+            }
+          } catch (calErr) {
+            console.warn("Failed automatic Calendar sync on submission:", calErr);
+          }
+        }
+
         setBookingResponse(data.meeting);
         setBookName("");
         setBookEmail("");
@@ -351,6 +382,32 @@ export default function InvestorsConsole() {
       setFormError(`Could not connect to the scheduling service: ${err.message || err.toString()}`);
     } finally {
       setIsBookingLoading(false);
+    }
+  };
+
+  const handleSyncToCalendar = async (meeting: Meeting) => {
+    if (!googleToken) {
+      setCalendarToast("Please connect your Google Workspace in settings below to authorize Google Calendar.");
+      setTimeout(() => setCalendarToast(""), 5000);
+      return;
+    }
+    setCalendarSyncLoadingId(meeting.id);
+    setFormError("");
+    try {
+      const res = await upsertCalendarEvent(googleToken, meeting);
+      if (res.success) {
+        const updated = [...syncedEventIds, meeting.id];
+        setSyncedEventIds(updated);
+        localStorage.setItem("nenifix_synced_calendar_ids", JSON.stringify(updated));
+        setCalendarToast(`Success: Scheduled NeniFix Roundtable with ${meeting.name} on Google Calendar! 1-day reminders configured.`);
+        setTimeout(() => setCalendarToast(""), 6000);
+      } else {
+        setFormError(`Calendar scheduling failed: ${res.error}`);
+      }
+    } catch (err: any) {
+      setFormError(`Sync threw exception: ${err.message || err.toString()}`);
+    } finally {
+      setCalendarSyncLoadingId(null);
     }
   };
 
@@ -498,7 +555,7 @@ export default function InvestorsConsole() {
             {showConfig && (
               <div className="mb-6 p-5 bg-[#0A0A0B] border border-white/5 rounded-2xl animate-fadeIn space-y-4 text-xs">
                 <div className="flex items-center justify-between border-b border-white/5 pb-2">
-                  <span className="font-mono text-[10px] uppercase text-primary tracking-wider font-bold">Google Forms Setting</span>
+                  <span className="font-mono text-[10px] uppercase text-primary tracking-wider font-bold">Google Connections</span>
                   {user ? (
                     <button
                       type="button"
@@ -519,7 +576,7 @@ export default function InvestorsConsole() {
                 {!user ? (
                   <div className="space-y-2 py-1">
                     <p className="text-white/60 font-sans leading-relaxed">
-                      Connect your Google Workspace to automatically pull native briefings or orchestrate a live Google Form connection.
+                      Connect your Google Workspace to authorize automated Google Calendar briefings, 1-day advance notifications, or orchestrate a live Google Form connection.
                     </p>
                     
                     {/* Official Sign in Style Button */}
@@ -862,17 +919,58 @@ export default function InvestorsConsole() {
                 </>
               ) : (
                 recentBookings.map((b, i) => (
-                  <div key={i} className="flex items-center justify-between font-mono text-[11px] p-2.5 bg-[#0A0A0B] rounded-xl border border-white/10">
+                  <div key={i} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 font-mono text-[11px] p-3 bg-[#0A0A0B] rounded-xl border border-white/10">
                     <div>
-                      <span className="text-[#e2e2e2] font-bold">{b.name} ({b.profile})</span>
-                      <span className="text-[9px] text-emerald-400 block">{b.date} / {b.time} UTC</span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[#e2e2e2] font-bold">{b.name}</span>
+                        <span className="text-[9px] text-neutral-400 px-1.5 py-0.5 bg-white/5 rounded">
+                          {b.profile}
+                        </span>
+                      </div>
+                      <span className="text-[9px] text-primary/85 block mt-0.5">{b.date} / {b.time} UTC</span>
                     </div>
-                    <span className="text-emerald-400 font-bold">{b.ticketSize}</span>
+                    
+                    <div className="flex items-center gap-2 justify-between sm:justify-end">
+                      <span className="text-primary font-bold mr-1">{b.ticketSize}</span>
+                      
+                      {syncedEventIds.includes(b.id) ? (
+                        <span className="text-[9px] bg-primary/10 border border-primary/20 text-primary px-2 py-1 rounded-lg flex items-center gap-1 font-bold select-none whitespace-nowrap">
+                          <CheckCircle className="w-3 h-3 text-primary animate-pulse" />
+                          <span>On Calendar</span>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={calendarSyncLoadingId === b.id}
+                          onClick={() => handleSyncToCalendar(b)}
+                          className="text-[9px] bg-white/5 hover:bg-primary/25 border border-white/10 hover:border-primary/40 text-neutral-300 hover:text-white px-2 py-1 rounded-lg transition-all duration-300 flex items-center gap-1 cursor-pointer disabled:opacity-50 whitespace-nowrap font-bold"
+                          title="Schedule this briefing on your Google Calendar immediately with a 1-day reminder"
+                        >
+                          {calendarSyncLoadingId === b.id ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                          ) : (
+                            <Calendar className="w-2.5 h-2.5" />
+                          )}
+                          <span>Sync Cal</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
             </div>
           </div>
+
+          {/* Google Calendar Feedback Toast */}
+          {calendarToast && (
+            <div className="fixed bottom-6 left-6 z-50 max-w-sm bg-[#0a0a0b] border border-primary/20 text-primary p-4 rounded-2xl shadow-[0_12px_40px_rgba(118,185,0,0.25)] animate-fadeIn font-mono text-[11px] leading-relaxed flex flex-col gap-1.5 backdrop-blur-md">
+              <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-[10px]">
+                <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+                <span>GOOGLE WORKSPACE ROUTER</span>
+              </div>
+              <p className="text-white/80 font-sans">{calendarToast}</p>
+            </div>
+          )}
 
         </div>
 
