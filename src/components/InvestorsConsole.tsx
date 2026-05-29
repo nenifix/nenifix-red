@@ -686,6 +686,17 @@ export default function InvestorsConsole() {
               </div>
             ) : (
               <form onSubmit={handleBookingSubmit} className="space-y-4">
+                <div className="p-3 bg-primary/10 border border-white/5 rounded-xl text-left flex items-start gap-2.5 animate-fadeIn">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary mt-1.5 shrink-0 animate-pulse"></div>
+                  <div>
+                    <span className="font-mono text-[9px] text-white/80 uppercase tracking-wider font-bold">
+                      Direct Routing Core Active
+                    </span>
+                    <p className="font-sans text-[10px] text-white/60 mt-0.5 leading-relaxed">
+                      All messages and bookings from this contact form are routed instantly to our main address <strong className="text-white">info@nenifix.com</strong> and archived at <strong className="text-white">godwintext@gmail.com</strong>.
+                    </p>
+                  </div>
+                </div>
                 <div className="grid sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-[10px] font-mono text-white/50 uppercase mb-1 font-bold">Investee Name</label>
@@ -788,6 +799,9 @@ export default function InvestorsConsole() {
                 </h4>
                 <p className="font-mono text-[9px] text-[#e2e2e2]/60 mb-2">Confirmation ID: {bookingResponse.id}</p>
                 <p className="font-sans text-[#BDBDBD] leading-relaxed">Excellent. We have registered {bookingResponse.name} for NeniFix Roundtable briefs on <strong>{bookingResponse.date}</strong> at <strong>{bookingResponse.time} UTC</strong>. Check your {bookingResponse.email} inbox for virtual credentials.</p>
+                <p className="font-sans text-[#BDBDBD] text-[11px] mt-2 leading-relaxed p-2 bg-white/5 rounded-lg border border-white/5">
+                  <span className="text-emerald-400 font-bold font-mono">✓ SECURE COPIES ROUTED:</span> Dispatched instantly to our main office (<strong className="text-white">info@nenifix.com</strong>) and backup system (<strong className="text-white">godwintext@gmail.com</strong>).
+                </p>
                 <button 
                   type="button"
                   onClick={() => setBookingResponse(null)}

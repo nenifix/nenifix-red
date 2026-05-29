@@ -15,7 +15,7 @@ export default function Footer({ setActiveTab }: FooterProps) {
 
   const handleLinkClick = (e: React.MouseEvent, label: string) => {
     e.preventDefault();
-    setToastText(`NeniFix secure reference [${label}] simulation mode active. Contact our IR desk for official files.`);
+    setToastText(`NeniFix secure reference [${label}] simulation mode active. Contact our main email address at info@nenifix.com for official files.`);
     setTimeout(() => {
       setToastText("");
     }, 5000);
@@ -88,9 +88,9 @@ export default function Footer({ setActiveTab }: FooterProps) {
 
       {/* Floating high-fidelity Bento toast notification instead of basic browser alert */}
       {toastText && (
-        <div className="fixed bottom-6 right-6 z-50 max-w-sm bg-[#0A0A0B] border border-[#a5b4fc]/20 text-[#a5b4fc] p-4 rounded-2xl shadow-[0_12px_40px_rgba(99,102,241,0.25)] animate-fadeIn font-mono text-[11px] leading-relaxed flex flex-col gap-1.5 backdrop-blur-md">
+        <div className="fixed bottom-6 right-6 z-50 max-w-sm bg-[#0A0A0B] border border-secondary/20 text-secondary p-4 rounded-2xl shadow-[0_12px_40px_rgba(118,185,0,0.25)] animate-fadeIn font-mono text-[11px] leading-relaxed flex flex-col gap-1.5 backdrop-blur-md">
           <div className="flex items-center gap-2 font-bold uppercase tracking-wider text-[10px]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#a5b4fc] animate-pulse"></span>
+            <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse"></span>
             <span>SECURE DIALOGUE NOTICE</span>
           </div>
           <p className="text-white/80 font-sans">{toastText}</p>

@@ -8,20 +8,20 @@
 
   --color-background: #0A0A0B;
   --color-bg-card: #141416;
-  --color-primary: #6366f1;
-  --color-secondary: #a5b4fc;
+  --color-primary: #76B900;
+  --color-secondary: #a3e635;
   --color-text-body: #BDBDBD;
   --color-text-subtle: #757575;
-  --color-border-magenta-low: rgba(99, 102, 241, 0.15);
-  --color-glow-magenta: rgba(99, 102, 241, 0.3);
-  --color-glow-cyan: rgba(129, 140, 248, 0.4);
+  --color-border-magenta-low: rgba(118, 185, 0, 0.15);
+  --color-glow-magenta: rgba(118, 185, 0, 0.3);
+  --color-glow-cyan: rgba(163, 230, 53, 0.4);
 }
 
 @layer utilities {
   .bg-neural-pattern {
     background-image: 
-      linear-gradient(to right, rgba(99, 102, 241, 0.04) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(99, 102, 241, 0.04) 1px, transparent 1px);
+      linear-gradient(to right, rgba(118, 185, 0, 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(118, 185, 0, 0.04) 1px, transparent 1px);
     background-size: 32px 32px;
   }
   
@@ -31,11 +31,11 @@
   }
   
   .glow-primary {
-    box-shadow: 0 10px 40px rgba(99, 102, 241, 0.15);
+    box-shadow: 0 10px 40px rgba(118, 185, 0, 0.15);
   }
   
   .glow-cyan-text {
-    text-shadow: 0 0 20px rgba(129, 140, 248, 0.5);
+    text-shadow: 0 0 20px rgba(163, 230, 53, 0.5);
   }
   
   .glass-panel {
@@ -50,9 +50,9 @@
 }
 
 @keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.3); }
-  70% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(118, 185, 0, 0.3); }
+  70% { box-shadow: 0 0 0 12px rgba(118, 185, 0, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(118, 185, 0, 0); }
 }
 
 html {
