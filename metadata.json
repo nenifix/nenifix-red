@@ -1,0 +1,6 @@
+{
+  "name": "NeniFix Investor Portfolio",
+  "description": "The interactive investor portfolio and strategic metrics platform for NeniFix Brand Engineering, demonstrating hybrid workforces, market scale, and philanthropic initiatives.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
